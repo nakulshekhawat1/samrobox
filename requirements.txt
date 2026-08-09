@@ -1,0 +1,9 @@
+edge-tts==6.1.9
+pygame==2.5.2
+groq==0.4.1
+SpeechRecognition==3.10.0
+pyaudio==0.2.11
+opencv-python==4.8.1.78
+Pillow==10.1.0
+yt-dlp==2023.10.13
+numpy==1.24.3
