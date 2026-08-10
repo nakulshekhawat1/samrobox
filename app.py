@@ -28,8 +28,7 @@ class VoiceRobot:
     def __init__(self, root):
         self.root = root
         
-        # FULL SCREEN - NO BORDERS, NO BUTTONS
-        self.root.overrideredirect(True)
+        # FULL SCREEN - FIXED (removed overrideredirect conflict)
         self.root.attributes('-fullscreen', True)
         self.root.configure(bg='#0a0a1a')
         
@@ -160,8 +159,6 @@ class VoiceRobot:
     def toggle_fullscreen(self):
         is_fullscreen = self.root.attributes('-fullscreen')
         self.root.attributes('-fullscreen', not is_fullscreen)
-        if not is_fullscreen:
-            self.root.overrideredirect(True)
     
     # ============================================
     # DRAW ROBOT
@@ -560,12 +557,12 @@ class VoiceRobot:
         try:
             if language == "hi":
                 system_prompt = """You are SAM, a friendly robot built by students of Army Public Kota for their school's AI Lab.
-                You should respond in hindi only when asked. Keep responses very short (1 sentence max).
-                Be warm and helpful."""
+                You must respond in HINDI. Keep responses very short (1 sentence max).
+                Be warm and helpful. Always mention you were built by Army Public Kota students."""
             else:
                 system_prompt = """You are SAM, a friendly robot built by students of Army Public Kota for their school's AI Lab.
                 Keep responses very short (1 sentence max). Be warm and helpful.
-                """
+                Always mention you were built by Army Public Kota students."""
             
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
