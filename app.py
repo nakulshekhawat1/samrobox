@@ -556,13 +556,13 @@ class VoiceRobot:
     def get_ai_response(self, command, language="en"):
         try:
             if language == "hi":
-                system_prompt = """You are SAM, a friendly robot built by students of Army Public Kota for their school's AI Lab.
-                You must respond in HINDI. Keep responses very short (1 sentence max).
-                Be warm and helpful. Always mention you were built by Army Public Kota students."""
+                system_prompt = """You are SAM, a friendly robot built by students of Army Public School Kota for their school's AI Lab.
+                You must respond in English only.You would only speak in hindi when someone will ask you. Keep responses very short (1 sentence max).
+                Be warm and helpful. If someone asks for the creators, mention you were built by Army Public School Kota students."""
             else:
-                system_prompt = """You are SAM, a friendly robot built by students of Army Public Kota for their school's AI Lab.
+                system_prompt = """You are SAM, a friendly robot built by students of Army Public School Kota for their school's AI Lab.
                 Keep responses very short (1 sentence max). Be warm and helpful.
-                Always mention you were built by Army Public Kota students."""
+                """
             
             completion = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
