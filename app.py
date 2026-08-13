@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import ttk
 import asyncio
 import edge_tts
 import pygame
@@ -28,7 +29,7 @@ class VoiceRobot:
     def __init__(self, root):
         self.root = root
         
-        # FULL SCREEN - FIXED (removed overrideredirect conflict)
+        # FULL SCREEN
         self.root.attributes('-fullscreen', True)
         self.root.configure(bg='#0a0a1a')
         
@@ -41,6 +42,11 @@ class VoiceRobot:
         self.canvas = tk.Canvas(root, width=self.screen_width, height=self.screen_height,
                                bg='#0a0a1a', highlightthickness=0, bd=0)
         self.canvas.pack(expand=True, fill=tk.BOTH)
+        
+        # ============================================
+        # TOGGLE BUTTONS IN LEFT CORNER
+        # ============================================
+        self.create_toggle_buttons()
         
         # Camera variables
         self.camera_window = None
@@ -55,18 +61,18 @@ class VoiceRobot:
         
         # Keyboard shortcuts
         self.root.bind('<Control-t>', self.show_text_input)
-        self.root.bind('<Escape>', lambda e: self.on_closing())
+        self.root.bind('<Escape>', lambda e: self.show_exit_confirmation())
         self.root.bind('<F11>', lambda e: self.toggle_fullscreen())
         
-        # DOUBLE TAP / DOUBLE RIGHT-CLICK TO EXIT
+        # DOUBLE TAP TO WAKE UP (NOT EXIT)
         self.last_click_time = 0
         self.click_count = 0
         
-        # Bind exit events
-        self.canvas.bind('<Button-1>', self.on_single_tap)
-        self.canvas.bind('<Button-3>', self.on_right_click)
-        self.root.bind('<Button-1>', self.on_single_tap)
-        self.root.bind('<Button-3>', self.on_right_click)
+        # Bind double-tap events for wake up
+        self.canvas.bind('<Button-1>', self.on_double_tap_wake)
+        self.canvas.bind('<Button-3>', self.on_double_tap_wake)
+        self.root.bind('<Button-1>', self.on_double_tap_wake)
+        self.root.bind('<Button-3>', self.on_double_tap_wake)
         
         # Initialize pygame
         pygame.mixer.init()
@@ -74,6 +80,9 @@ class VoiceRobot:
         # Speech recognition
         self.recognizer = sr.Recognizer()
         self.microphone = sr.Microphone()
+        
+        # MICROPHONE LOCK - To prevent multiple context managers
+        self.microphone_lock = threading.Lock()
         
         # Command queue
         self.command_queue = queue.Queue()
@@ -89,11 +98,22 @@ class VoiceRobot:
         self.mouth_open = 0
         self.mouth_direction = 1
         
-        # Wake words
-        self.WAKE_WORDS = ['sam', 'hey', 'hello', 'some']
+        # Toggle states
+        self.wake_toggle = False
+        self.camera_toggle = False
+        self.song_toggle = False
+        
+        # IMPROVED WAKE WORDS
+        self.WAKE_WORDS = ['hey sam', 'hello sam', 'okay sam', 'listen sam', 'sam sam', 'computer']
+        self.WAKE_WORDS_SINGLE = ['sam', 'computer']
         self.HINDI_KEYWORDS = ['hindi', 'हिंदी', 'hindi me bolo', 'हिंदी में बोलो']
         self.SONG_KEYWORDS = ['play song', 'play music', 'गाना बजाओ']
         self.VISION_KEYWORDS = ['woodpecker', 'see', 'look', 'camera']
+        
+        # Wake word cooldown
+        self.last_wake_time = 0
+        self.wake_cooldown = 3.0
+        self.wake_word_confidence = 0
         
         # Scale robot
         self.scale = min(self.screen_width, self.screen_height) / 500
@@ -108,32 +128,167 @@ class VoiceRobot:
         
         # Welcome message
         self.root.after(1000, lambda: self.speak_with_expression(
-            "Namaste! I am SAM. Say my name to talk. Say Woodpecker for me to see! Double tap to exit.",
+            "Namaste! I am SAM. Double tap to wake me up, or say my name. Double tap again to listen!",
             "normal", "en"))
     
     # ============================================
-    # EXIT HANDLERS
+    # TOGGLE BUTTONS
     # ============================================
-    def on_single_tap(self, event):
-        current_time = time.time()
-        if current_time - self.last_click_time < 0.5:
-            self.click_count += 1
-            if self.click_count >= 2:
-                self.click_count = 0
-                self.show_exit_confirmation()
-                return
-        else:
-            self.click_count = 1
-        self.last_click_time = current_time
-        self.root.after(500, self.reset_click_count)
+    def create_toggle_buttons(self):
+        """Create toggle buttons in the left corner"""
+        
+        # Button frame
+        button_frame = tk.Frame(self.root, bg='#1a1a2e', bd=2, relief=tk.RAISED)
+        button_frame.place(x=20, y=20, width=200, height=220)
+        
+        # Title label
+        title_label = tk.Label(button_frame, text="SAM Controls", 
+                              font=('Arial', 12, 'bold'), 
+                              bg='#1a1a2e', fg='#00ffff')
+        title_label.pack(pady=(10, 5))
+        
+        # Toggle: Wake Up
+        self.wake_toggle_var = tk.BooleanVar(value=False)
+        self.wake_toggle_btn = tk.Checkbutton(button_frame,
+                                             text="🎤 Wake Mode",
+                                             variable=self.wake_toggle_var,
+                                             font=('Arial', 11, 'bold'),
+                                             bg='#2d2d44',
+                                             fg='white',
+                                             selectcolor='#9b59b6',
+                                             activebackground='#8e44ad',
+                                             activeforeground='white',
+                                             relief=tk.RAISED,
+                                             bd=3,
+                                             padx=20,
+                                             pady=8,
+                                             cursor='hand2',
+                                             command=self.toggle_wake_mode)
+        self.wake_toggle_btn.pack(pady=(5, 5), padx=10, fill=tk.X)
+        
+        # Toggle: Play Song
+        self.song_toggle_var = tk.BooleanVar(value=False)
+        self.song_toggle_btn = tk.Checkbutton(button_frame,
+                                             text="🎵 Music Mode",
+                                             variable=self.song_toggle_var,
+                                             font=('Arial', 11, 'bold'),
+                                             bg='#2d2d44',
+                                             fg='white',
+                                             selectcolor='#e74c3c',
+                                             activebackground='#c0392b',
+                                             activeforeground='white',
+                                             relief=tk.RAISED,
+                                             bd=3,
+                                             padx=20,
+                                             pady=8,
+                                             cursor='hand2',
+                                             command=self.toggle_song_mode)
+        self.song_toggle_btn.pack(pady=(5, 5), padx=10, fill=tk.X)
+        
+        # Toggle: Camera
+        self.camera_toggle_var = tk.BooleanVar(value=False)
+        self.camera_toggle_btn = tk.Checkbutton(button_frame,
+                                                text="📷 Camera Mode",
+                                                variable=self.camera_toggle_var,
+                                                font=('Arial', 11, 'bold'),
+                                                bg='#2d2d44',
+                                                fg='white',
+                                                selectcolor='#2ecc71',
+                                                activebackground='#27ae60',
+                                                activeforeground='white',
+                                                relief=tk.RAISED,
+                                                bd=3,
+                                                padx=20,
+                                                pady=8,
+                                                cursor='hand2',
+                                                command=self.toggle_camera_mode)
+        self.camera_toggle_btn.pack(pady=(5, 5), padx=10, fill=tk.X)
+        
+        # Toggle: Exit (with confirmation)
+        self.exit_toggle_var = tk.BooleanVar(value=False)
+        self.exit_toggle_btn = tk.Checkbutton(button_frame,
+                                             text="⏻ Exit",
+                                             variable=self.exit_toggle_var,
+                                             font=('Arial', 11, 'bold'),
+                                             bg='#2d2d44',
+                                             fg='white',
+                                             selectcolor='#e74c3c',
+                                             activebackground='#c0392b',
+                                             activeforeground='white',
+                                             relief=tk.RAISED,
+                                             bd=3,
+                                             padx=20,
+                                             pady=8,
+                                             cursor='hand2',
+                                             command=self.toggle_exit)
+        self.exit_toggle_btn.pack(pady=(5, 5), padx=10, fill=tk.X)
+        
+        # Status indicator
+        self.status_label = tk.Label(button_frame, 
+                                    text="● Ready",
+                                    font=('Arial', 9),
+                                    bg='#1a1a2e', 
+                                    fg='#2ecc71')
+        self.status_label.pack(pady=(5, 5))
     
-    def on_right_click(self, event):
+    # ============================================
+    # TOGGLE FUNCTIONS
+    # ============================================
+    def toggle_wake_mode(self):
+        """Toggle wake mode on/off"""
+        if self.wake_toggle_var.get():
+            self.wake_toggle_btn.config(bg='#9b59b6', fg='white')
+            self.status_label.config(text="● Wake Mode ON", fg='#9b59b6')
+            self.speak_with_expression("Wake mode activated. Double tap or say my name.", "listening", "en")
+            self.draw_robot("listening")
+        else:
+            self.wake_toggle_btn.config(bg='#2d2d44', fg='white')
+            self.status_label.config(text="● Wake Mode OFF", fg='#666')
+            self.draw_robot("normal")
+    
+    def toggle_song_mode(self):
+        """Toggle song mode on/off"""
+        if self.song_toggle_var.get():
+            self.song_toggle_btn.config(bg='#e74c3c', fg='white')
+            self.status_label.config(text="● Music Mode ON", fg='#e74c3c')
+            self.manual_play_song()
+        else:
+            self.song_toggle_btn.config(bg='#2d2d44', fg='white')
+            self.status_label.config(text="● Music Mode OFF", fg='#666')
+    
+    def toggle_camera_mode(self):
+        """Toggle camera mode on/off"""
+        if self.camera_toggle_var.get():
+            self.camera_toggle_btn.config(bg='#2ecc71', fg='white')
+            self.status_label.config(text="● Camera Mode ON", fg='#2ecc71')
+            self.manual_vision()
+        else:
+            self.camera_toggle_btn.config(bg='#2d2d44', fg='white')
+            self.status_label.config(text="● Camera Mode OFF", fg='#666')
+            if self.camera_running:
+                self.stop_camera()
+    
+    def toggle_exit(self):
+        """Toggle exit with confirmation"""
+        if self.exit_toggle_var.get():
+            self.exit_toggle_btn.config(bg='#e74c3c', fg='white')
+            self.show_exit_confirmation()
+        else:
+            self.exit_toggle_btn.config(bg='#2d2d44', fg='white')
+    
+    # ============================================
+    # DOUBLE TAP TO WAKE UP (NOT EXIT)
+    # ============================================
+    def on_double_tap_wake(self, event):
+        """Double tap to wake up SAM"""
         current_time = time.time()
         if current_time - self.last_click_time < 0.5:
             self.click_count += 1
             if self.click_count >= 2:
                 self.click_count = 0
-                self.show_exit_confirmation()
+                # Double tap detected - WAKE UP instead of exit
+                if not self.speaking:
+                    self.manual_wake_up()
                 return
         else:
             self.click_count = 1
@@ -143,7 +298,11 @@ class VoiceRobot:
     def reset_click_count(self):
         self.click_count = 0
     
+    # ============================================
+    # EXIT WITH CONFIRMATION (Only from toggle)
+    # ============================================
     def show_exit_confirmation(self):
+        """Show exit confirmation with flashing effect"""
         def flash_exit(count=0):
             if count < 3:
                 if count % 2 == 0:
@@ -153,12 +312,158 @@ class VoiceRobot:
                 self.root.after(200, lambda: flash_exit(count + 1))
             else:
                 self.draw_robot("normal")
+                self.exit_toggle_var.set(False)
+                self.exit_toggle_btn.config(bg='#2d2d44', fg='white')
                 self.root.after(500, self.on_closing)
         flash_exit()
     
     def toggle_fullscreen(self):
         is_fullscreen = self.root.attributes('-fullscreen')
         self.root.attributes('-fullscreen', not is_fullscreen)
+    
+    # ============================================
+    # FIXED MANUAL WAKE UP
+    # ============================================
+    def manual_wake_up(self):
+        """Manually wake up SAM and listen for command"""
+        if self.speaking:
+            self.status_label.config(text="● Busy", fg='#e74c3c')
+            return
+        
+        # Visual feedback
+        self.draw_robot("listening")
+        self.status_label.config(text="● Listening...", fg='#9b59b6')
+        if not self.wake_toggle_var.get():
+            self.wake_toggle_var.set(True)
+            self.wake_toggle_btn.config(bg='#9b59b6', fg='white')
+        
+        def listen_manually():
+            try:
+                # Speak confirmation
+                self.root.after(0, lambda: self.speak_with_expression(
+                    "Yes? I'm listening.", "listening", "en"))
+                
+                # Wait for speech to finish
+                time.sleep(2)
+                
+                # Use lock to prevent context manager conflict
+                with self.microphone_lock:
+                    with self.microphone as source:
+                        self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                        print("Manual listening for command...")
+                        audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=15)
+                
+                try:
+                    command = self.recognizer.recognize_google(audio, language='en-IN')
+                    print(f"Manual command: {command}")
+                    self.command_queue.put((command, "en"))
+                    self.status_label.config(text="● Command received", fg='#3498db')
+                    
+                except sr.UnknownValueError:
+                    self.root.after(0, lambda: self.speak_with_expression(
+                        "Sorry, I didn't catch that.", "normal", "en"))
+                    self.status_label.config(text="● Didn't catch", fg='#e74c3c')
+                    self.draw_robot("normal")
+                    
+                except sr.RequestError:
+                    self.root.after(0, lambda: self.speak_with_expression(
+                        "Network error. Please try again.", "normal", "en"))
+                    self.status_label.config(text="● Network Error", fg='#e74c3c')
+                    self.draw_robot("normal")
+                    
+            except Exception as e:
+                print(f"Manual wake error: {e}")
+                self.status_label.config(text="● Error", fg='#e74c3c')
+                self.draw_robot("normal")
+                
+            finally:
+                # Reset after a delay
+                self.root.after(3000, lambda: self.status_label.config(text="● Ready", fg='#2ecc71'))
+                self.root.after(3000, lambda: self.draw_robot("normal"))
+        
+        threading.Thread(target=listen_manually, daemon=True).start()
+    
+    def manual_play_song(self):
+        """Manually trigger song playback with a popup"""
+        if self.playing_song:
+            self.speak_with_expression("Already playing a song.", "normal", "en")
+            return
+        
+        # Create song input dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Play Song")
+        dialog.geometry("400x150")
+        dialog.configure(bg='#1a1a2e')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry(f"+{self.screen_width//2-200}+{self.screen_height//2-75}")
+        
+        # Title
+        title = tk.Label(dialog, text="🎵 Enter Song Name", 
+                        font=('Arial', 14, 'bold'),
+                        bg='#1a1a2e', fg='#00ffff')
+        title.pack(pady=(20, 10))
+        
+        # Entry
+        song_entry = tk.Entry(dialog, font=('Arial', 12),
+                             bg='#2d2d44', fg='white',
+                             insertbackground='white',
+                             width=30)
+        song_entry.pack(pady=(0, 10))
+        song_entry.focus()
+        
+        def play_song_from_entry():
+            song_name = song_entry.get().strip()
+            if song_name:
+                dialog.destroy()
+                self.status_label.config(text="● Playing song...", fg='#e74c3c')
+                self.song_toggle_var.set(True)
+                self.song_toggle_btn.config(bg='#e74c3c', fg='white')
+                self.search_and_play_youtube(song_name)
+            else:
+                self.speak_with_expression("Please enter a song name.", "normal", "en")
+        
+        def on_enter(event):
+            play_song_from_entry()
+        
+        song_entry.bind('<Return>', on_enter)
+        
+        # Buttons
+        button_frame = tk.Frame(dialog, bg='#1a1a2e')
+        button_frame.pack(pady=10)
+        
+        play_btn = tk.Button(button_frame, text="▶ Play", 
+                            font=('Arial', 10, 'bold'),
+                            bg='#2ecc71', fg='white',
+                            padx=20, pady=5,
+                            command=play_song_from_entry)
+        play_btn.pack(side=tk.LEFT, padx=5)
+        
+        cancel_btn = tk.Button(button_frame, text="✕ Cancel",
+                              font=('Arial', 10, 'bold'),
+                              bg='#e74c3c', fg='white',
+                              padx=20, pady=5,
+                              command=lambda: [dialog.destroy(), self.song_toggle_var.set(False), 
+                                             self.song_toggle_btn.config(bg='#2d2d44', fg='white')])
+        cancel_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Bind escape to close
+        dialog.bind('<Escape>', lambda e: [dialog.destroy(), self.song_toggle_var.set(False), 
+                                          self.song_toggle_btn.config(bg='#2d2d44', fg='white')])
+    
+    def manual_vision(self):
+        """Manually toggle camera"""
+        if self.camera_running:
+            self.stop_camera()
+            self.camera_toggle_var.set(False)
+            self.camera_toggle_btn.config(bg='#2d2d44', fg='white')
+            self.status_label.config(text="● Camera Off", fg='#e74c3c')
+            self.root.after(2000, lambda: self.status_label.config(text="● Ready", fg='#2ecc71'))
+        else:
+            self.status_label.config(text="● Opening Camera...", fg='#2ecc71')
+            threading.Thread(target=self.start_camera_vision, daemon=True).start()
     
     # ============================================
     # DRAW ROBOT
@@ -275,7 +580,7 @@ class VoiceRobot:
                                    right_eye_x + eye_size//2 + pupil_size//2,
                                    eye_y + eye_size//2 + pupil_size//2, fill='black')
         
-        # MOUTH WITH REAL OPENING/CLOSING
+        # MOUTH
         if state == "speaking":
             mouth_height = 5*s + (mouth_open / 100) * 35*s
             self.canvas.create_arc(center_x - mouth_width//2, mouth_y - mouth_height/2,
@@ -409,6 +714,8 @@ class VoiceRobot:
             self.cap = cv2.VideoCapture(0)
             if not self.cap.isOpened():
                 self.speak_with_expression("Camera not found.", "normal", "en")
+                self.camera_toggle_var.set(False)
+                self.camera_toggle_btn.config(bg='#2d2d44', fg='white')
                 return
             
             self.camera_running = True
@@ -433,9 +740,14 @@ class VoiceRobot:
             self.update_camera_feed()
             self.speak_with_expression("Camera is ready. I can see you now!", "vision", "en")
             
+            self.camera_toggle_btn.config(bg='#2ecc71', fg='white')
+            self.status_label.config(text="● Camera ON", fg='#2ecc71')
+            
         except Exception as e:
             print(f"Camera error: {e}")
             self.speak_with_expression("Sorry, I couldn't access the camera.", "normal", "en")
+            self.camera_toggle_var.set(False)
+            self.camera_toggle_btn.config(bg='#2d2d44', fg='white')
     
     def update_camera_feed(self):
         if not self.camera_running or not self.cap:
@@ -489,12 +801,17 @@ class VoiceRobot:
             self.camera_window = None
         self.draw_robot("normal")
         self.speak_with_expression("Camera closed.", "normal", "en")
+        self.camera_toggle_var.set(False)
+        self.camera_toggle_btn.config(bg='#2d2d44', fg='white')
+        self.status_label.config(text="● Camera Off", fg='#e74c3c')
+        self.root.after(2000, lambda: self.status_label.config(text="● Ready", fg='#2ecc71'))
     
     # ============================================
     # YOUTUBE MUSIC
     # ============================================
     def search_and_play_youtube(self, song_name):
         try:
+            self.playing_song = True
             self.root.after(0, lambda: self.draw_robot("playing"))
             
             ydl_opts = {
@@ -540,15 +857,26 @@ class VoiceRobot:
                         self.root.after(0, lambda: self.draw_robot("normal"))
                         self.root.after(0, lambda: self.speak_with_expression(
                             "Hope you enjoyed the song!", "normal", "en"))
+                        self.playing_song = False
+                        self.song_toggle_var.set(False)
+                        self.song_toggle_btn.config(bg='#2d2d44', fg='white')
+                        self.status_label.config(text="● Song finished", fg='#2ecc71')
+                        self.root.after(2000, lambda: self.status_label.config(text="● Ready", fg='#2ecc71'))
                     else:
                         self.root.after(0, lambda: self.speak_with_expression(
                             "Sorry, couldn't download the song.", "normal", "en"))
+                        self.playing_song = False
+                        self.song_toggle_var.set(False)
+                        self.song_toggle_btn.config(bg='#2d2d44', fg='white')
                         
         except Exception as e:
             print(f"Error playing song: {e}")
             self.root.after(0, lambda: self.speak_with_expression(
                 "Sorry, I couldn't play that song.", "normal", "en"))
             self.root.after(0, lambda: self.draw_robot("normal"))
+            self.playing_song = False
+            self.song_toggle_var.set(False)
+            self.song_toggle_btn.config(bg='#2d2d44', fg='white')
     
     # ============================================
     # GROQ AI RESPONSE
@@ -583,49 +911,92 @@ class VoiceRobot:
                 return "Sorry, technical issue."
     
     # ============================================
+    # WAKE WORD DETECTION
+    # ============================================
+    def is_wake_word(self, text):
+        """Improved wake word detection with cooldown and context awareness"""
+        # Check cooldown
+        current_time = time.time()
+        if current_time - self.last_wake_time < self.wake_cooldown:
+            return False
+        
+        text_lower = text.lower().strip()
+        
+        # Check for exact wake phrases first (most reliable)
+        for wake in self.WAKE_WORDS:
+            if wake in text_lower:
+                self.wake_word_confidence = 1.0
+                self.last_wake_time = current_time
+                return True
+        
+        # Check for single word wake words with context
+        words = text_lower.split()
+        
+        # Check if any wake word is at the beginning or end of phrase
+        for i, word in enumerate(words):
+            if word in self.WAKE_WORDS_SINGLE:
+                if i == 0 or i == len(words)-1:
+                    self.wake_word_confidence = 0.8
+                    self.last_wake_time = current_time
+                    return True
+                if i > 0 and words[i-1] in ['hey', 'hello', 'okay', 'listen', 'computer']:
+                    self.wake_word_confidence = 0.9
+                    self.last_wake_time = current_time
+                    return True
+        
+        return False
+    
+    # ============================================
     # VOICE RECOGNITION
     # ============================================
     def start_voice_recognition(self):
         def listen_continuously():
             while self.running:
                 try:
-                    with self.microphone as source:
-                        self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
-                        audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=5)
+                    with self.microphone_lock:
+                        with self.microphone as source:
+                            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                            print("Listening for wake word...")
+                            audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=8)
                     
                     try:
                         text = self.recognizer.recognize_google(audio, language='en-IN')
                         text_lower = text.lower().strip()
+                        print(f"Heard: {text_lower}")
                         
                         if self.is_wake_word(text_lower):
+                            print(f"Wake word detected with confidence: {self.wake_word_confidence}")
+                            
                             if any(keyword in text_lower for keyword in self.HINDI_KEYWORDS):
                                 self.current_language = "hi"
                             else:
                                 self.current_language = "en"
                             
                             self.root.after(0, lambda: self.draw_robot("listening"))
+                            self.status_label.config(text="● Wake word detected", fg='#9b59b6')
                             
-                            with self.microphone as source2:
-                                self.recognizer.adjust_for_ambient_noise(source2, duration=0.2)
-                                audio2 = self.recognizer.listen(source2, timeout=5, phrase_time_limit=10)
+                            time.sleep(0.5)
+                            
+                            with self.microphone_lock:
+                                with self.microphone as source2:
+                                    self.recognizer.adjust_for_ambient_noise(source2, duration=0.3)
+                                    print("Listening for command...")
+                                    audio2 = self.recognizer.listen(source2, timeout=8, phrase_time_limit=15)
                             
                             try:
                                 command = self.recognizer.recognize_google(audio2, language='en-IN')
+                                print(f"Command: {command}")
                                 self.command_queue.put((command, self.current_language))
+                                self.status_label.config(text="● Command received", fg='#3498db')
                             except sr.UnknownValueError:
-                                if self.current_language == "hi":
-                                    self.root.after(0, lambda: self.speak_with_expression(
-                                        "माफ़ करें, मुझे समझ नहीं आया।", "normal", "hi"))
-                                else:
-                                    self.root.after(0, lambda: self.speak_with_expression(
-                                        "Sorry, I didn't catch that.", "normal", "en"))
+                                error_msg = "Sorry, I didn't catch that. Please repeat." if self.current_language == "en" else "माफ़ करें, मुझे समझ नहीं आया। कृपया दोहराएं।"
+                                self.root.after(0, lambda: self.speak_with_expression(error_msg, "normal", self.current_language))
                             except sr.RequestError:
-                                if self.current_language == "hi":
-                                    self.root.after(0, lambda: self.speak_with_expression(
-                                        "नेटवर्क समस्या।", "normal", "hi"))
-                                else:
-                                    self.root.after(0, lambda: self.speak_with_expression(
-                                        "Network error.", "normal", "en"))
+                                error_msg = "Network error. Please try again." if self.current_language == "en" else "नेटवर्क समस्या। कृपया पुनः प्रयास करें।"
+                                self.root.after(0, lambda: self.speak_with_expression(error_msg, "normal", self.current_language))
+                            
+                            self.root.after(2000, lambda: self.status_label.config(text="● Ready", fg='#2ecc71'))
+                            self.root.after(2000, lambda: self.draw_robot("normal"))
                         
                     except sr.UnknownValueError:
                         pass
@@ -637,13 +1008,6 @@ class VoiceRobot:
                     time.sleep(0.5)
         
         threading.Thread(target=listen_continuously, daemon=True).start()
-    
-    def is_wake_word(self, text):
-        words = text.split()
-        for word in words:
-            if word in self.WAKE_WORDS:
-                return True
-        return False
     
     # ============================================
     # COMMAND PROCESSOR
